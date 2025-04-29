@@ -1,13 +1,7 @@
 ﻿using System;
-using System.Collections.Generic;
 using System.Linq;
 using System.Reactive;
-using System.Reactive.Concurrency;
-using System.Reactive.Disposables;
 using System.Reactive.Linq;
-using System.Reactive.Subjects;
-using System.Reactive.Threading.Tasks;
-using System.Threading;
 using NodeNetwork.ViewModels;
 using NodeNetwork.Views;
 using ReactiveUI;
@@ -42,7 +36,7 @@ namespace NodeNetwork.Toolkit.ValueNode
         /// An observable that fires when the input value changes. 
         /// This may be because of a connection change, editor value change, network validation change, ...
         /// </summary>
-        public IObservable<T> ValueChanged { get; } 
+        public IObservable<T> ValueChanged { get; }
         #endregion
 
         /// <summary>
@@ -52,7 +46,7 @@ namespace NodeNetwork.Toolkit.ValueNode
         /// <param name="connectionChangedValidationAction">The validation behaviour when the connection of this input changes.</param>
         /// <param name="connectedValueChangedValidationAction">The validation behaviour when the value of this input changes.</param>
         public ValueNodeInputViewModel(
-            ValidationAction connectionChangedValidationAction = ValidationAction.PushDefaultValue, 
+            ValidationAction connectionChangedValidationAction = ValidationAction.PushDefaultValue,
             ValidationAction connectedValueChangedValidationAction = ValidationAction.IgnoreValidation
         )
         {
@@ -60,7 +54,7 @@ namespace NodeNetwork.Toolkit.ValueNode
             ConnectionValidator = pending => new ConnectionValidationResult(pending.Output is ValueNodeOutputViewModel<T>, null);
 
             var connectedValues = GenerateConnectedValuesBinding(connectionChangedValidationAction, connectedValueChangedValidationAction);
-            
+
             var localValues = this.WhenAnyValue(vm => vm.Editor)
                 .Select(e =>
                 {
@@ -84,7 +78,7 @@ namespace NodeNetwork.Toolkit.ValueNode
                 ).Publish();
             valueChanged.Connect();
             valueChanged.ToProperty(this, vm => vm.Value, out _value);
-            
+
             ValueChanged = Observable
                 .Defer(() => Observable.Return(Value))
                 .Concat(valueChanged);
@@ -100,7 +94,7 @@ namespace NodeNetwork.Toolkit.ValueNode
             if (connectionChangedValidationAction != ValidationAction.DontValidate)
             {
                 //Either run network validation
-                IObservable<NetworkValidationResult> postValidation = onConnectionChanged
+                var postValidation = onConnectionChanged
                     .SelectMany(con => Parent?.Parent?.UpdateValidation.Execute() ?? Observable.Return(new NetworkValidationResult(true, true, null)));
 
                 if (connectionChangedValidationAction == ValidationAction.WaitForValid)
@@ -121,10 +115,39 @@ namespace NodeNetwork.Toolkit.ValueNode
                         {
                             return Observable.Return(default(T));
                         }
-                        else if(validation.NetworkIsTraversable)
+                        else if (validation.NetworkIsTraversable)
                         {
-                            IObservable<T> connectedObservable =
-                                ((ValueNodeOutputViewModel<T>) Connections.Items.First().Output).Value;
+
+                            if (Connections.Items.First().Output is ValueNodeOutputViewModel<T>
+                                valueNodeOutputViewModel)
+                                return valueNodeOutputViewModel.Value;
+                            //var connectedObservable =
+                            //    ((ValueNodeOutputViewModel<T>)Connections.Items.First().Output).Value;
+
+                            IObservable<T> connectedObservable = null;
+                            var firstOutput = Connections.Items.First().Output;
+                            var outputType = firstOutput.GetType();
+                            if (outputType.IsGenericType && outputType.GetGenericTypeDefinition() == typeof(ValueNodeOutputViewModel<>))
+                            {
+                                var valueProperty = outputType.GetProperty("Value");
+                                var observable = valueProperty.GetValue(firstOutput);  // Получаем IObservable<ChildType>
+
+                                // Динамически вызываем Select, чтобы преобразовать ChildType → ParentType
+                                var selectMethod = typeof(System.Reactive.Linq.Observable)
+                                    .GetMethods()
+                                    .First(m => m.Name == "Select" && m.GetParameters().Length == 2)
+                                    .MakeGenericMethod(
+                                        outputType.GetGenericArguments()[0],  // ChildType
+                                        typeof(T)                    // Целевой тип
+                                    );
+
+                                Func<object, T> castFunc = x => (T)x;
+                                connectedObservable = (IObservable<T>)selectMethod.Invoke(
+                                    null,
+                                    new object[] { observable, castFunc }
+                                );
+                            }
+
                             if (connectedObservable == null)
                             {
                                 throw new Exception($"The value observable for output '{Connections.Items.First().Output.Name}' is null.");
@@ -149,7 +172,7 @@ namespace NodeNetwork.Toolkit.ValueNode
                             }
                             else
                             {
-                                IObservable<T> connectedObservable =
+                                var connectedObservable =
                                     ((ValueNodeOutputViewModel<T>)Connections.Items.First().Output).Value;
                                 if (connectedObservable == null)
                                 {
@@ -171,7 +194,7 @@ namespace NodeNetwork.Toolkit.ValueNode
                     }
                     else
                     {
-                        IObservable<T> connectedObservable =
+                        var connectedObservable =
                             ((ValueNodeOutputViewModel<T>)con.Output).Value;
                         if (connectedObservable == null)
                         {
@@ -181,13 +204,13 @@ namespace NodeNetwork.Toolkit.ValueNode
                     }
                 });
             }
-            IObservable<T> connectedValues = connectionObservables.SelectMany(c => c);
+            var connectedValues = connectionObservables.SelectMany(c => c);
 
             //On connected output value change, either just push the value as is
             if (connectedValueChangedValidationAction != ValidationAction.DontValidate)
             {
                 //Or run a network validation
-                IObservable<NetworkValidationResult> postValidation = connectedValues.SelectMany(v =>
+                var postValidation = connectedValues.SelectMany(v =>
                     Parent?.Parent?.UpdateValidation.Execute() ?? Observable.Return(new NetworkValidationResult(true, true, null)));
                 if (connectedValueChangedValidationAction == ValidationAction.WaitForValid)
                 {
@@ -209,7 +232,15 @@ namespace NodeNetwork.Toolkit.ValueNode
                     }
 
                     //Or just ignore the validation and push the value as is
-                    return ((ValueNodeOutputViewModel<T>) this.Connections.Items.First().Output).CurrentValue;
+                    if (this.Connections.Items.First().Output is ValueNodeOutputViewModel<T> valueNodeOutputViewModel)
+                        return valueNodeOutputViewModel.CurrentValue;
+
+
+                    var output = this.Connections.Items.First().Output;
+                    var valueProperty = output.GetType().GetProperty("CurrentValue");
+                    return (T)valueProperty.GetValue(output);
+
+                    //return ((ValueNodeOutputViewModel<T>)this.Connections.Items.First().Output).CurrentValue;
                 });
             }
 
